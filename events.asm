@@ -1,7 +1,11 @@
 %include "x11.inc"
+%include "linux.inc"
 
 extern display
 extern draw_text
+extern accept_client
+extern isServer
+extern serverSocket
 extern printf
 
 global run_event_loop
@@ -13,6 +17,15 @@ section .bss
     curEvent    resq 192        ; Current window event (that'll be processed)
     keyBuf:     resb 32
 
+    ; struct pollfd { int fd; short events; short revents; } pollFds[2];
+    pollFds:                    ; [0] = X server connection, [1] = server socket
+    xFd:        resd 1          ; pollFds[0].fd
+    xEvents:    resw 1          ; pollFds[0].events
+    xRevents:   resw 1          ; pollFds[0].revents
+    socketFd:   resd 1          ; pollFds[1].fd
+    socketEvents:  resw 1       ; pollFds[1].events
+    socketRevents: resw 1       ; pollFds[1].revents
+
 section .text
 
 ; Processes window events until the window is closed
@@ -20,7 +33,44 @@ run_event_loop:
     push rbp
     mov rbp, rsp
 
+    ; Get the fd of the X server connection to wait on it
+    ; int XConnectionNumber(Display *display);
+    mov rdi, [rel display]      ; arg 1: Display*
+    call XConnectionNumber
+    mov [rel xFd], eax          ; pollFds[0].fd     = X server fd
+    mov word [rel xEvents], POLLIN  ; pollFds[0].events = POLLIN
+
+    mov eax, [rel serverSocket]
+    mov [rel socketFd], eax     ; pollFds[1].fd     = serverSocket
+    mov word [rel socketEvents], POLLIN ; pollFds[1].events = POLLIN (a player is waiting to join)
+
 .loop:
+    ; Accept a new player if we're the server (doesn't block)
+    cmp byte [rel isServer], 1  ; Check if we're the server
+    jne .checkPending
+    call accept_client
+
+.checkPending:
+    ; Check if there are events already waiting
+    ; int XPending(Display *display);
+    mov rdi, [rel display]      ; arg 1: Display*
+    call XPending
+    test eax, eax               ; Check if there are any events
+    jnz .nextEvent
+
+    ; Wait until the X server sends an event or a player joins
+    ; poll(pollFds, 1 + isServer, -1);
+    ; sys_poll(struct pollfd *ufds, uint nfds, int timeout_msecs)
+    mov eax, sys_poll           ; sys_poll syscall number
+    lea rdi, [rel pollFds]      ; arg 1: ufds          = pollFds
+    movzx esi, byte [rel isServer]
+    inc esi                     ; arg 2: nfds          = 1 + isServer (the client only waits on X)
+    mov edx, -1                 ; arg 3: timeout_msecs = -1 (wait forever)
+    syscall                     ; Invoke kernel
+
+    jmp .loop
+
+.nextEvent:
     ; Get next event
     ; int XNextEvent(Display *display, XEvent *event_return);
     mov rdi, [rel display]      ; arg 1: Display*

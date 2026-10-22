@@ -5,9 +5,11 @@ extern openXDisplay
 extern create_window
 extern create_graphics_context
 extern run_event_loop
+extern start_multiplayer
 
 extern display
 extern window
+extern serverSocket
 
 global main
 
@@ -17,8 +19,18 @@ main:
     push rbp
     mov rbp, rsp
 
+    ; Make the server socket non blocking
+    ; sys_fcntl(uint fd, uint cmd, ulong arg)
+    ; sys_fcntl(serverSocket, F_SETFL, O_NONBLOCK)
+    ;mov eax, sys_fcntl              ; sys_fcntl syscall number
+    ;mov edi, [rel serverSocket]     ; arg 1: fd  = serverSocket
+    ;mov esi, F_SETFL                ; arg 2: cmd = F_SETFL (set the file status flags)
+    ;mov edx, O_NONBLOCK             ; arg 3: arg = O_NONBLOCK (non blocking)
+    ;syscall                         ; Invoke kernel
+
     call openXDisplay
     call create_window
+    call start_multiplayer
 
     call create_graphics_context
     test eax, eax               ; Check if failed
@@ -27,7 +39,6 @@ main:
     call run_event_loop
 
 .exit:
-    
     ; Clean up
     ; int XDestroyWindow(Display *display, Window w);
     mov rdi, [rel display]      ; arg 1: Display*

@@ -60,6 +60,12 @@ extern XCreateSimpleWindow
 extern XSync
 extern XFlush
 
+; int XPending(Display *display);
+extern XPending                          ; Returns the number of events that are waiting to be processed
+
+; int XConnectionNumber(Display *display);
+extern XConnectionNumber                 ; Returns the fd of the connection to the X server
+
 ; int XNextEvent(Display *display, XEvent *event_return);
 extern XNextEvent
 %define KeyPressEventType              2

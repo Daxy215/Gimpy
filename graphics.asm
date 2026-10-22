@@ -3,6 +3,7 @@
 
 extern display
 extern window
+extern isServer
 
 global create_graphics_context
 global draw_text
@@ -14,8 +15,11 @@ section .data
     loadingFontFailedMessage: db "Font failed to load", 0x0A
     loadingFontFailedMessageLength: equ $ - loadingFontFailedMessage
 
-    drawText: db "Finally some text!"
-    drawTextLength: equ $ - drawText
+    hostText: db "u r host"
+    hostTextLength: equ $ - hostText
+
+    clientText: db "u r client"
+    clientTextLength: equ $ - clientText
 
     ; xlsfonts
     fontName: db "-misc-fixed-medium-r-normal--13-120-75-75-c-70-iso10646-1", 0x00
@@ -105,11 +109,20 @@ create_graphics_context:
     pop rbp
     ret
 
-; Draws the text onto the window
+; Draws the text onto the window ("u r host" or "u r client")
 draw_text:
     push rbp
     mov rbp, rsp
 
+    ; Pick the text based on if we're the host or a client
+    lea r9, [rel clientText]    ; string = clientText
+    mov eax, clientTextLength   ; length = clientTextLength
+    cmp byte [rel isServer], 1  ; Check if we're the server
+    jne .drawString
+    lea r9, [rel hostText]      ; string = hostText
+    mov eax, hostTextLength     ; length = hostTextLength
+
+.drawString:
     ; int XDrawString(
     ;     Display *display,           ; rdi
     ;     Drawable d,                 ; rsi
@@ -120,14 +133,14 @@ draw_text:
     ;     int length                  ; stack
     ; );
     sub rsp, 8                  ; pad (keeps 16-byte alignment)
-    push drawTextLength         ; arg 7: length = drawTextLength
+    push rax                    ; arg 7: length = hostTextLength or clientTextLength
 
     mov rdi, [rel display]      ; arg 1: Display*
     mov rsi, [rel window]       ; arg 2: Drawable = window
     mov rdx, [rel gc]           ; arg 3: GC = gc
     mov ecx, 20                 ; arg 4: x
     mov r8d, 20                 ; arg 5: y (baseline)
-    lea r9, [rel drawText]      ; arg 6: string = drawText
+                                ; arg 6: string = hostText or clientText (already in r9)
     call XDrawString
     add rsp, 16                 ; 8 (arg) + 8 (pad)
 
