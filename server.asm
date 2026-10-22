@@ -1,11 +1,13 @@
 %include "linux.inc"
+%include "multiplayer.inc"
 
 extern serverAddress
 extern serverAddressLength
 extern printf
 
 global host_server
-global accept_client
+global update_server
+global fill_server_poll_fds
 global serverSocket
 
 section .data
@@ -16,9 +18,15 @@ section .data
 
     clientMessageFormat: db "Message from client: %s", 0x0A, 0
 
+    playerJoinedFormat: db "Player %d joined (%d/%d players)", 0x0A, 0
+    playerLeftFormat:   db "Player %d left (%d/%d players)", 0x0A, 0
+    serverFullFormat:   db "Server is full (%d/%d players), player rejected", 0x0A, 0
+
 section .bss
-    serverSocket: resd 1            ; int serverSocket
-    clientSocket: resd 1            ; int clientSocket
+    serverSocket:  resd 1           ; int serverSocket
+    clientSockets: resd MAX_CLIENTS ; int clientSockets[MAX_CLIENTS] (-1 = empty slot)
+    playerCount:   resd 1           ; int playerCount (including the host)
+    newPlayerId:   resb 1           ; Id sent to the player that just joined
 
     buffer:       resb 1024         ; char buffer[1024]
     bufferLength: equ $ - buffer
@@ -79,6 +87,18 @@ host_server:
     test eax, eax                   ; Check if failed
     js .closeSocket
 
+    ; Mark every player slot as empty
+    lea rdi, [rel clientSockets]
+    xor ecx, ecx                    ; i = 0
+
+.clearSlot:
+    mov dword [rdi + rcx*4], -1     ; clientSockets[i] = -1
+    inc ecx                         ; i++
+    cmp ecx, MAX_CLIENTS
+    jl .clearSlot
+
+    mov dword [rel playerCount], 1  ; The host is the 1st player
+
     ; Print a message
     ; sys_write(uint fd, const char *buf, size_t count)
     mov rax, sys_write      ; sys_write syscall number
@@ -107,31 +127,119 @@ host_server:
     pop rbp
     ret
 
-; Accepts a new player and prints their message
-; Doesn't block, returns right away if there's no player waiting
+; Accepts new players and receives messages from the connected ones
+; Doesn't block, returns right away if there's nothing to do
+update_server:
+    push rbp
+    mov rbp, rsp
+
+    call accept_client
+    call receive_from_clients
+
+    pop rbp
+    ret
+
+; Accepts a new player if there's a free slot, otherwise rejects them
 accept_client:
     push rbp
     mov rbp, rsp
 
-    ; Accept the connection request
-    ; int clientSocket = accept(serverSocket, nullptr, nullptr);
-    ; sys_accept(int fd, struct sockaddr *addr, int *addrlen)
-    mov eax, sys_accept             ; sys_accept syscall number
+    ; Accept the connection request (the player's socket is non blocking too)
+    ; int clientSocket = accept4(serverSocket, nullptr, nullptr, SOCK_NONBLOCK);
+    ; sys_accept4(int fd, struct sockaddr *addr, int *addrlen, int flags)
+    mov eax, sys_accept4            ; sys_accept4 syscall number
     mov edi, [rel serverSocket]     ; arg 1: fd      = serverSocket
     xor esi, esi                    ; arg 2: addr    = nullptr
     xor edx, edx                    ; arg 3: addrlen = nullptr
+    mov r10d, SOCK_NONBLOCK         ; arg 4: flags   = SOCK_NONBLOCK (non blocking)
     syscall                         ; Invoke kernel
 
     test eax, eax                   ; Check if failed (-EAGAIN = no player waiting)
     js .done
 
-    mov [rel clientSocket], eax     ; Save the client's socket fd
+    cmp dword [rel playerCount], MAX_PLAYERS    ; Check if the server is full
+    jge .serverFull
+
+    ; Find an empty slot
+    lea rdi, [rel clientSockets]
+    xor ecx, ecx                    ; i = 0
+
+.findSlot:
+    cmp dword [rdi + rcx*4], -1     ; Check if clientSockets[i] is empty
+    je .foundSlot
+    inc ecx                         ; i++
+    cmp ecx, MAX_CLIENTS
+    jl .findSlot                    ; if i < MAX_CLIENTS
+    jmp .serverFull                 ; No empty slot
+
+.foundSlot:
+    mov [rdi + rcx*4], eax          ; clientSockets[i] = clientSocket
+    inc dword [rel playerCount]     ; playerCount++
+
+    add ecx, 2                      ; id = i + 2 (the host is 1)
+    mov [rel newPlayerId], cl       ; Save the player's id
+
+    ; Tell the player their id
+    ; send(clientSocket, &newPlayerId, 1, 0);
+    ; sys_sendto(int fd, void *buf, size_t len, unsigned flags, struct sockaddr *addr, int addrlen)
+    mov eax, sys_sendto             ; sys_sendto syscall number
+    mov edi, eax                    ; arg 1: fd      = clientSocket
+    lea rsi, [rel newPlayerId]      ; arg 2: buf     = &newPlayerId
+    mov edx, 1                      ; arg 3: len     = 1 byte
+    xor r10d, r10d                  ; arg 4: flags   = 0
+    xor r8d, r8d                    ; arg 5: addr    = nullptr
+    xor r9d, r9d                    ; arg 6: addrlen = 0
+    syscall                         ; Invoke kernel
+
+    ; printf("Player %d joined (%d/%d players)\n", newPlayerId, playerCount, MAX_PLAYERS)
+    lea rdi, [rel playerJoinedFormat]
+    movzx esi, byte [rel newPlayerId]
+    mov edx, [rel playerCount]
+    mov ecx, MAX_PLAYERS
+    xor eax, eax
+    call printf
+
+    jmp .done
+
+.serverFull:
+    ; Close the player's socket
+    ; close(clientSocket);
+    ; sys_close(uint fd)
+    mov edi, eax                    ; arg 1: fd = clientSocket
+    mov eax, sys_close              ; sys_close syscall number
+    syscall                         ; Invoke kernel
+
+    ; printf("Server is full (%d/%d players), player rejected\n", playerCount, MAX_PLAYERS)
+    lea rdi, [rel serverFullFormat]
+    mov esi, [rel playerCount]
+    mov edx, MAX_PLAYERS
+    xor eax, eax
+    call printf
+
+.done:
+    pop rbp
+    ret
+
+; Receives messages from every connected player, and removes the ones that left
+receive_from_clients:
+    push rbp
+    mov rbp, rsp
+    push rbx                        ; Save rbx (callee saved), used for the slot index
+    push r12                        ; Save r12 (callee saved), used for the player's socket
+
+    xor ebx, ebx                    ; i = 0
+
+.nextSlot:
+    lea rax, [rel clientSockets]
+    mov r12d, [rax + rbx*4]         ; r12d = clientSockets[i]
+    cmp r12d, -1                    ; Check if the slot is empty
+    je .skipSlot
 
     ; Receive data
-    ; recv(clientSocket, buffer, sizeof(buffer), 0);
+    ; recv(clientSockets[i], buffer, sizeof(buffer) - 1, 0);
     ; sys_recvfrom(int fd, void *buf, size_t len, unsigned flags, struct sockaddr *addr, int *addrlen)
     mov eax, sys_recvfrom           ; sys_recvfrom syscall number
-    mov edi, [rel clientSocket]     ; arg 1: fd      = clientSocket
+    mov edi, r12d                   ; arg 1: fd      = clientSockets[i]
     lea rsi, [rel buffer]           ; arg 2: buf     = buffer
     mov edx, bufferLength - 1       ; arg 3: len     = sizeof(buffer) - 1 (room for the null terminator)
     xor r10d, r10d                  ; arg 4: flags   = 0
@@ -139,8 +247,10 @@ accept_client:
     xor r9d, r9d                    ; arg 6: addrlen = nullptr
     syscall                         ; Invoke kernel
 
-    test eax, eax                   ; Check if failed
-    js .done
+    cmp eax, -EAGAIN                ; Check if there's nothing to read yet
+    je .skipSlot
+    test eax, eax                   ; Check if the player left (0 = disconnected, negative = error)
+    jle .playerLeft
 
     lea rdi, [rel buffer]
     mov byte [rdi + rax], 0         ; Null terminate the message
@@ -152,6 +262,65 @@ accept_client:
     xor eax, eax
     call printf
 
-.done:
+    jmp .skipSlot
+
+.playerLeft:
+    ; Close the player's socket
+    ; close(clientSockets[i]);
+    ; sys_close(uint fd)
+    mov eax, sys_close              ; sys_close syscall number
+    mov edi, r12d                   ; arg 1: fd = clientSockets[i]
+    syscall                         ; Invoke kernel
+
+    lea rax, [rel clientSockets]
+    mov dword [rax + rbx*4], -1     ; clientSockets[i] = -1 (empty slot)
+    dec dword [rel playerCount]     ; playerCount--
+
+    ; printf("Player %d left (%d/%d players)\n", i + 2, playerCount, MAX_PLAYERS)
+    lea rdi, [rel playerLeftFormat]
+    lea esi, [ebx + 2]              ; id = i + 2 (the host is 1)
+    mov edx, [rel playerCount]
+    mov ecx, MAX_PLAYERS
+    xor eax, eax
+    call printf
+
+.skipSlot:
+    inc ebx                         ; i++
+    cmp ebx, MAX_CLIENTS
+    jl .nextSlot
+
+    pop r12                         ; Restore r12
+    pop rbx                         ; Restore rbx
     pop rbp
     ret
+
+; Fills pollFds with the server socket and every player's socket (to wait on them with poll)
+; Takes the pollfd array in rdi, returns the number of pollfds filled in eax
+fill_server_poll_fds:
+    push rbp
+    mov rbp, rsp
+
+    ; pollFds[0] = { serverSocket, POLLIN, 0 } (a player is waiting to join)
+    mov eax, [rel serverSocket]
+    mov [rdi], eax                  ; .fd      = serverSocket
+    mov word [rdi + 4], POLLIN      ; .events  = POLLIN
+    mov word [rdi + 6], 0           ; .revents = 0
+
+    ; pollFds[1 + i] = { clientSockets[i], POLLIN, 0 } (poll ignores -1 = empty slot)
+    lea rsi, [rel clientSockets]
+    xor ecx, ecx                    ; i = 0
+
+.fillSlot:
+    mov eax, [rsi + rcx*4]
+    mov [rdi + 8 + rcx*8], eax              ; .fd      = clientSockets[i]
+    mov word [rdi + 8 + rcx*8 + 4], POLLIN  ; .events  = POLLIN
+    mov word [rdi + 8 + rcx*8 + 6], 0       ; .revents = 0
+    inc ecx                         ; i++
+    cmp ecx, MAX_CLIENTS
+    jl .fillSlot
+
+    mov eax, 1 + MAX_CLIENTS        ; Number of pollfds filled
+
+    pop rbp
+    ret
+

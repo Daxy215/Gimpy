@@ -5,6 +5,7 @@ extern connect_to_server
 
 global start_multiplayer
 global isServer
+global playerId
 global serverAddress
 global serverAddressLength
 
@@ -25,6 +26,7 @@ section .data
 
 section .bss
     isServer:   resb 1          ; 1 = server (host), 0 = client
+    playerId:   resd 1          ; 1 = host, 2..MAX_PLAYERS = clients, 0 = couldn't join
 
 section .text
 
@@ -39,6 +41,7 @@ start_multiplayer:
     js .hostingFailed
 
     mov byte [rel isServer], 1      ; We're the server
+    mov dword [rel playerId], 1     ; The host is player 1
 
     pop rbp
     ret

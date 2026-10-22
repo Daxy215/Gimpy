@@ -28,6 +28,10 @@
 ; sys_accept(int fd, struct sockaddr *addr, int *addrlen)
 %define sys_accept 43
 
+; sys_accept4(int fd, struct sockaddr *addr, int *addrlen, int flags)
+%define sys_accept4 288
+%define EAGAIN 11           ; Nothing to read/accept yet, try again later
+
 ; sys_sendto(int fd, void *buf, size_t len, unsigned flags, struct sockaddr *addr, int addrlen)
 %define sys_sendto 44
 

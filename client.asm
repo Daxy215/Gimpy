@@ -2,6 +2,8 @@
 
 extern serverAddress
 extern serverAddressLength
+extern playerId
+extern printf
 
 global connect_to_server
 
@@ -12,12 +14,18 @@ section .data
     connectingFailedMessage: db "Failed to connect to the server", 0x0A
     connectingFailedMessageLength: equ $ - connectingFailedMessage
 
+    serverFullMessage: db "Server is full, couldn't join", 0x0A
+    serverFullMessageLength: equ $ - serverFullMessage
+
+    joinedFormat: db "Joined as player %d", 0x0A, 0
+
 section .bss
     clientSocket: resd 1            ; int clientSocket
+    receivedId:   resb 1            ; Id received from the server
 
 section .text
 
-; Connects to the server and sends it a message
+; Connects to the server, sends it a message and receives our player id
 connect_to_server:
     push rbp
     mov rbp, rsp
@@ -60,12 +68,48 @@ connect_to_server:
     xor r9d, r9d                    ; arg 6: addrlen = 0
     syscall                         ; Invoke kernel
 
+    ; Receive our player id (waits until the server sends it)
+    ; recv(clientSocket, &receivedId, 1, 0);
+    ; sys_recvfrom(int fd, void *buf, size_t len, unsigned flags, struct sockaddr *addr, int *addrlen)
+    mov eax, sys_recvfrom           ; sys_recvfrom syscall number
+    mov edi, [rel clientSocket]     ; arg 1: fd      = clientSocket
+    lea rsi, [rel receivedId]       ; arg 2: buf     = &receivedId
+    mov edx, 1                      ; arg 3: len     = 1 byte
+    xor r10d, r10d                  ; arg 4: flags   = 0
+    xor r8d, r8d                    ; arg 5: addr    = nullptr
+    xor r9d, r9d                    ; arg 6: addrlen = nullptr
+    syscall                         ; Invoke kernel
+
+    cmp eax, 1                      ; Check if we got the id (0 = the server closed the connection, it's full)
+    jne .serverFull
+
+    movzx eax, byte [rel receivedId]
+    mov [rel playerId], eax         ; playerId = receivedId
+
+    ; printf("Joined as player %d\n", playerId)
+    lea rdi, [rel joinedFormat]
+    mov esi, [rel playerId]
+    xor eax, eax
+    call printf
+
+    pop rbp
+    ret
+
+.serverFull:
     ; Close the socket
     ; close(clientSocket);
     ; sys_close(uint fd)
     mov eax, sys_close              ; sys_close syscall number
     mov edi, [rel clientSocket]     ; arg 1: fd = clientSocket
     syscall                         ; Invoke kernel
+
+    ; Print a message
+    ; sys_write(uint fd, const char *buf, size_t count)
+    mov rax, sys_write      ; sys_write syscall number
+    mov rdi, stdout         ; Fle descriptor 1 (stdout)
+    lea rsi, [rel serverFullMessage]  ; Pointer to message
+    mov rdx, serverFullMessageLength  ; Number of bytes to write
+    syscall                 ; Invoke kernel
 
     pop rbp
     ret

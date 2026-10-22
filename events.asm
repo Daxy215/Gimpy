@@ -1,11 +1,12 @@
 %include "x11.inc"
 %include "linux.inc"
+%include "multiplayer.inc"
 
 extern display
 extern draw_text
-extern accept_client
+extern update_server
+extern fill_server_poll_fds
 extern isServer
-extern serverSocket
 extern printf
 
 global run_event_loop
@@ -17,14 +18,9 @@ section .bss
     curEvent    resq 192        ; Current window event (that'll be processed)
     keyBuf:     resb 32
 
-    ; struct pollfd { int fd; short events; short revents; } pollFds[2];
-    pollFds:                    ; [0] = X server connection, [1] = server socket
-    xFd:        resd 1          ; pollFds[0].fd
-    xEvents:    resw 1          ; pollFds[0].events
-    xRevents:   resw 1          ; pollFds[0].revents
-    socketFd:   resd 1          ; pollFds[1].fd
-    socketEvents:  resw 1       ; pollFds[1].events
-    socketRevents: resw 1       ; pollFds[1].revents
+    ; struct pollfd { int fd; short events; short revents; } pollFds[2 + MAX_CLIENTS];
+    ; [0] = X server connection, [1] = server socket, [2..] = players' sockets
+    pollFds:    resb 8 * (2 + MAX_CLIENTS)
 
 section .text
 
@@ -32,23 +28,21 @@ section .text
 run_event_loop:
     push rbp
     mov rbp, rsp
+    push rbx                    ; Save rbx (callee saved), used for nfds
+    sub rsp, 8                  ; pad (keeps 16-byte alignment)
 
     ; Get the fd of the X server connection to wait on it
     ; int XConnectionNumber(Display *display);
     mov rdi, [rel display]      ; arg 1: Display*
     call XConnectionNumber
-    mov [rel xFd], eax          ; pollFds[0].fd     = X server fd
-    mov word [rel xEvents], POLLIN  ; pollFds[0].events = POLLIN
-
-    mov eax, [rel serverSocket]
-    mov [rel socketFd], eax     ; pollFds[1].fd     = serverSocket
-    mov word [rel socketEvents], POLLIN ; pollFds[1].events = POLLIN (a player is waiting to join)
+    mov [rel pollFds], eax      ; pollFds[0].fd     = X server fd
+    mov word [rel pollFds + 4], POLLIN  ; pollFds[0].events = POLLIN
 
 .loop:
-    ; Accept a new player if we're the server (doesn't block)
+    ; Accept new players and receive their messages if we're the server (doesn't block)
     cmp byte [rel isServer], 1  ; Check if we're the server
     jne .checkPending
-    call accept_client
+    call update_server
 
 .checkPending:
     ; Check if there are events already waiting
@@ -58,13 +52,23 @@ run_event_loop:
     test eax, eax               ; Check if there are any events
     jnz .nextEvent
 
-    ; Wait until the X server sends an event or a player joins
-    ; poll(pollFds, 1 + isServer, -1);
+    ; The client only waits on X
+    mov ebx, 1                  ; nfds = 1
+    cmp byte [rel isServer], 1  ; Check if we're the server
+    jne .poll
+
+    ; The server also waits on its socket and the players' sockets
+    lea rdi, [rel pollFds + 8]  ; arg 1: &pollFds[1]
+    call fill_server_poll_fds
+    lea ebx, [eax + 1]          ; nfds = 1 + number of server pollfds
+
+.poll:
+    ; Wait until the X server sends an event, a player joins, or a player sends something
+    ; poll(pollFds, nfds, -1);
     ; sys_poll(struct pollfd *ufds, uint nfds, int timeout_msecs)
     mov eax, sys_poll           ; sys_poll syscall number
     lea rdi, [rel pollFds]      ; arg 1: ufds          = pollFds
-    movzx esi, byte [rel isServer]
-    inc esi                     ; arg 2: nfds          = 1 + isServer (the client only waits on X)
+    mov esi, ebx                ; arg 2: nfds          = nfds
     mov edx, -1                 ; arg 3: timeout_msecs = -1 (wait forever)
     syscall                     ; Invoke kernel
 
@@ -112,5 +116,7 @@ run_event_loop:
     jmp .loop
 
 .done:
+    add rsp, 8                  ; Remove the pad
+    pop rbx                     ; Restore rbx
     pop rbp
     ret

@@ -4,6 +4,8 @@
 extern display
 extern window
 extern isServer
+extern playerId
+extern sprintf
 
 global create_graphics_context
 global draw_text
@@ -18,8 +20,10 @@ section .data
     hostText: db "u r host"
     hostTextLength: equ $ - hostText
 
-    clientText: db "u r client"
-    clientTextLength: equ $ - clientText
+    clientTextFormat: db "u r client: %d", 0
+
+    serverFullText: db "server is full"
+    serverFullTextLength: equ $ - serverFullText
 
     ; xlsfonts
     fontName: db "-misc-fixed-medium-r-normal--13-120-75-75-c-70-iso10646-1", 0x00
@@ -27,6 +31,8 @@ section .data
 section .bss
     gc:         resq 1
     font:       resq 1
+
+    clientText: resb 32         ; "u r client: id" gets written here
 
 section .text
 
@@ -109,18 +115,30 @@ create_graphics_context:
     pop rbp
     ret
 
-; Draws the text onto the window ("u r host" or "u r client")
+; Draws the text onto the window ("u r host", "u r client: id" or "server is full")
 draw_text:
     push rbp
     mov rbp, rsp
 
     ; Pick the text based on if we're the host or a client
-    lea r9, [rel clientText]    ; string = clientText
-    mov eax, clientTextLength   ; length = clientTextLength
-    cmp byte [rel isServer], 1  ; Check if we're the server
-    jne .drawString
     lea r9, [rel hostText]      ; string = hostText
     mov eax, hostTextLength     ; length = hostTextLength
+    cmp byte [rel isServer], 1  ; Check if we're the server
+    je .drawString
+
+    lea r9, [rel serverFullText]    ; string = serverFullText
+    mov eax, serverFullTextLength   ; length = serverFullTextLength
+    cmp dword [rel playerId], 0     ; Check if we couldn't join (no id)
+    je .drawString
+
+    ; int sprintf(char *str, const char *format, ...);
+    ; sprintf(clientText, "u r client: %d", playerId)
+    lea rdi, [rel clientText]       ; arg 1: str    = clientText
+    lea rsi, [rel clientTextFormat] ; arg 2: format = clientTextFormat
+    mov edx, [rel playerId]         ; arg 3: playerId
+    xor eax, eax
+    call sprintf                    ; Returns the length of the text
+    lea r9, [rel clientText]        ; string = clientText
 
 .drawString:
     ; int XDrawString(
@@ -133,14 +151,14 @@ draw_text:
     ;     int length                  ; stack
     ; );
     sub rsp, 8                  ; pad (keeps 16-byte alignment)
-    push rax                    ; arg 7: length = hostTextLength or clientTextLength
+    push rax                    ; arg 7: length = length of the text
 
     mov rdi, [rel display]      ; arg 1: Display*
     mov rsi, [rel window]       ; arg 2: Drawable = window
     mov rdx, [rel gc]           ; arg 3: GC = gc
     mov ecx, 20                 ; arg 4: x
     mov r8d, 20                 ; arg 5: y (baseline)
-                                ; arg 6: string = hostText or clientText (already in r9)
+                                ; arg 6: string = the text (already in r9)
     call XDrawString
     add rsp, 16                 ; 8 (arg) + 8 (pad)
 
