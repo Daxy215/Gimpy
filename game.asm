@@ -195,21 +195,6 @@ section .data
     loadingFontFailedMessage: db "Font failed to load", 0x0A
     loadingFontFailedMessageLength: equ $ - loadingFontFailedMessage
 
-    message: db "Hello from my assembly game!", 0x0A
-    messageLength: equ $ - message
-    
-    terminalSettingsUpdatedMessage: db "The terminal settings have successfully updated", 0x0A
-    terminalSettingsUpdatedMessageLength: equ $ - terminalSettingsUpdatedMessage
-
-    terminalSettingsRestoredMessage: db "The terminal settings have successfully restored", 0x0A
-    terminalSettingsRestoredMessageLength: equ $ - terminalSettingsRestoredMessage
-    
-    keyboardOpenAtFailed: db "Openat failed to open keyboard: %d", 0x0A, 0
-
-    ; sudo evtest /dev/input/event12
-    ; My keyboard is at event12 
-    keyboardEvent: db "/dev/input/event12", 0x00
-
     keyPressFormat: db "Pressed: %c", 0x0A, 0
 
     drawText: db "Finally some text!"
@@ -219,11 +204,6 @@ section .data
     fontName: db "-misc-fixed-medium-r-normal--13-120-75-75-c-70-iso10646-1", 0x00
 
 section .bss
-    ; For ICANON(2), ECHO(8)
-    old_termios resb 64
-    new_termios resb 64
-    key         resb 1
-    
     display:    resq 1          ; 8 bytes (quadword), zero-initialized
     screenNum:  resd 1
     rootWindow: resq 1
@@ -245,83 +225,6 @@ section .bss
 ; https://github.com/las-nish/NASM-Assembly-Collection/blob/main/Linux%20System%20Call.MD
 
 section .text
-
-; Waits for the key 'ENTER' to be pressed
-wait_for_enter_key_press:
-    ; sys_read(uint fd, char *buf, size_t count)
-    ; sys_read(0, 0, 1)
-    mov rax, sys_read       ; sys_read syscall number
-    mov rdi, stdin          ; File descriptor 0 (stdin)
-    mov rdx, 1              ; Number of bytes to read
-    syscall                 ; Invoke kerenl
-    
-    ret
-
-; Clears ICANON and ECHO
-clear_terminal_settings:
-    ; sys_ioctl(uint fd, uint cmd, ulong arg)
-    ; sys_ioctl(stdin, TCGETS, old_termios)
-    mov eax, sys_ioctl      ; sys_ioctl syscall number
-    mov edi, stdin          ; File descriptor 0 (stdin)
-    mov esi, TCGETS         ; Get the terminal settings
-    lea rdx, [rel old_termios]
-    syscall                 ; Invoke kernel
-    
-    ; Copy terminal settings
-    lea rsi, [rel old_termios]
-    lea rdi, [rel new_termios]
-    mov ecx, 64
-    rep movsb
-
-    ; Clear ICANON (2) and ECHO (8) in c_lflag
-    and word [rel new_termios + 12], 0xFFF5
-
-    ; Apply the new settings
-    ; sys_ioctl(uint fd, uint cmd, ulong arg)
-    ; sys_ioctl(stdin, TCSETS, new_termios)
-    mov eax, sys_ioctl      ; sys_ioctl syscall number
-    mov edi, stdin          ; File descriptor 0 (stdin)
-    mov esi, TCSETS         ; Set the new updated terminal settings
-    lea rdx, [rel new_termios]
-    syscall                 ; Invoke kerenl
-
-    ; sys_fcntl(uint fd, uint cmd, ulong arg)
-    ; sys_fcntl(stdin, F_SETFL, O_NONBLOCK)
-    mov eax, sys_fcntl      ; sys_fcntl syscall number
-    mov edi, stdin          ; File descriptor 0 (stdin)
-    mov esi, F_SETFL        ; Sets the FL to be non blocking
-    mov edx, O_NONBLOCK     ; Non blocking
-    syscall
-    
-     ; Print a message
-    ; sys_write(uint fd, const char *buf, size_t count)
-    ; sys_write(1, message, 13)
-    mov rax, sys_write      ; sys_write syscall number
-    mov rdi, stdout         ; Fle descriptor 1 (stdout)
-    lea rsi, [rel terminalSettingsUpdatedMessage]  ; Pointer to message
-    mov rdx, terminalSettingsUpdatedMessageLength  ; Number of bytes to write
-    syscall                 ; Invoke kernel
-
-    ret
-
-; Restores the terminal settings to it's original
-restore_termina_settings:
-    mov eax, sys_ioctl      ; sys_ioctl syscall number
-    mov edi, stdin          ; File descriptor 0 (stdin)
-    mov esi, TCSETS         ; To restore the old settings
-    lea edx, [rel old_termios]
-    syscall                 ; Invoke kerenl
-
-     ; Print a message
-    ; sys_write(uint fd, const char *buf, size_t count)
-    ; sys_write(1, message, 13)
-    mov rax, sys_write      ; sys_write syscall number
-    mov rdi, stdout         ; Fle descriptor 1 (stdout)
-    lea rsi, [rel terminalSettingsRestoredMessage]  ; Pointer to message
-    mov rdx, terminalSettingsRestoredMessageLength  ; Number of bytes to write
-    syscall                 ; Invoke kernel
-
-    ret
 
 openXDisplay:
     sub rsp, 8               ; 16-byte align before call
@@ -584,54 +487,4 @@ main:
     mov rax, sys_exit       ; sys_exit syscall number
     xor rdi, rdi            ; Exit code 0
     syscall                 ; Invoke kerenl
-    
-    ; Update the terminal settings to make it,
-    ; non blocking and clear ICANON and ECHO
-    ;call clear_terminal_settings
-
-    call wait_for_enter_key_press
-
-    ; Print a message
-    ; sys_write(uint fd, const char *buf, size_t count)
-    ; sys_write(1, message, 13)
-    mov rax, sys_write      ; sys_write syscall number
-    mov rdi, stdout         ; Fle descriptor 1 (stdout)
-    lea rsi, [rel message]  ; Pointer to message
-    mov rdx, messageLength  ; Number of bytes to write
-    syscall                 ; Invoke kernel
-   
-    ; Open a device and listen to it's events
-    ; sys_openat(int dfd, const char *filename, int flags, int mode)
-    ; sys_openat(-100, keyboardEvent, O_RDONLY, 0)
-    mov rax, sys_openat     ; sys_openat syscall number
-    mov rdi, AT_FDCWD       ; Resolve paths relative to the current working directory
-    lea rsi, [rel keyboardEvent]  ; Keyboard event path
-    mov rdx, O_RDONLY       ; Read only
-    mov r10d, r10d          ; No flags
-    syscall                 ; Invoke kernel
-    
-    ; https://en.wikibooks.org/wiki/X86_Disassembly/Branches
-    ; Check for an error
-    test rax, rax
-    js openat_failed
-    
-    jmp end
-    
-openat_failed:
-    mov rsi, rax
-    lea rdi, [rel keyboardOpenAtFailed]
-    xor eax, eax
-    call printf
-
-end:
-    
-    ; Restore terminal settings
-    call restore_termina_settings
-    
-    ; Exit program with no errors
-    ; sys_exit(int error_code)
-    ; sys_exit(0)
-    mov rax, sys_exit       ; sys_exit syscall number
-    xor rdi, rdi            ; Exit code 0
-    syscall                 ; Invoke keren;
 
