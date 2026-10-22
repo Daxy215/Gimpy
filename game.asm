@@ -100,6 +100,44 @@ extern XNextEvent
 ; int XLookupString(XKeyEvent *ev, char *buf, int nbytes, KeySym *ks_return, XComposeStatus *status)
 extern XLookupString
 
+; GC XCreateGC(Display *display, Drawable d, unsigned long valuemask, XGCValues *values);
+extern XCreateGC
+%define GCFunction          0x00000001
+%define GCPlaneMask         0x00000002
+%define GCForeground        0x00000004
+%define GCBackground        0x00000008
+%define GCLineWidth         0x00000010
+%define GCLineStyle         0x00000020
+%define GCCapStyle          0x00000040
+%define GCJoinStyle         0x00000080
+%define GCFillStyle         0x00000100
+%define GCFillRule          0x00000200
+%define GCTile              0x00000400
+%define GCStipple           0x00000800
+%define GCTileStipXOrigin   0x00001000
+%define GCTileStipYOrigin   0x00002000
+%define GCFont              0x00004000
+%define GCSubwindowMode     0x00008000
+%define GCGraphicsExposures 0x00010000
+%define GCClipXOrigin       0x00020000
+%define GCClipYOrigin       0x00040000
+%define GCClipMask          0x00080000
+%define GCDashOffset        0x00100000
+%define GCDashList          0x00200000
+%define GCArcMode           0x00400000
+
+; XFontStruct *XLoadQueryFont(Display *display, const char *name);
+extern XLoadQueryFont                    ; Returns NULL if the font fails to load (XLoadFont doesn't)
+
+; int XSetFont(Display *display, GC gc, Font font);
+extern XSetFont
+
+; int XSetForeground(Display *display, GC gc, unsigned long foreground);
+extern XSetForeground
+
+; int XDrawString(Display *display, Drawable d, GC gc, int x, int y, const char *string, int length);
+extern XDrawString
+
 ; int XDestroyWindow(Display *display, Window w);
 extern XDestroyWindow
 
@@ -151,6 +189,12 @@ section .data
     displaySuccessMessage: db "Display was successfully created", 0x0A
     displaySuccessMessageLength: equ $ - displaySuccessMessage
 
+    gcCreationFailedMessage: db "Graphics context failed to create", 0x0A
+    gcCreationFailedMessageLength: equ $ - gcCreationFailedMessage
+
+    loadingFontFailedMessage: db "Font failed to load", 0x0A
+    loadingFontFailedMessageLength: equ $ - loadingFontFailedMessage
+
     message: db "Hello from my assembly game!", 0x0A
     messageLength: equ $ - message
     
@@ -168,6 +212,12 @@ section .data
 
     keyPressFormat: db "Pressed: %c", 0x0A, 0
 
+    drawText: db "Finally some text!"
+    drawTextLength: equ $ - drawText
+    
+    ; xlsfonts
+    fontName: db "-misc-fixed-medium-r-normal--13-120-75-75-c-70-iso10646-1", 0x00
+
 section .bss
     ; For ICANON(2), ECHO(8)
     old_termios resb 64
@@ -178,8 +228,10 @@ section .bss
     screenNum:  resd 1
     rootWindow: resq 1
     window:     resq 1
-    curEvent    resq 192        ; Current window event (that'll be processed)
+    gc:         resq 1
+    font:       resq 1
 
+    curEvent    resq 192        ; Current window event (that'll be processed)
     keyBuf:     resb 32
 
 ; Arguments seems to be in this format:
@@ -381,7 +433,47 @@ main:
     ; mov rdi, [rel display]
     ; call XFlush
     
-    ; Infinite loop
+    ; Create the grpahics context
+    ; GC XCreateGC(Display *display, Drawable d, unsigned long valuemask, XGCValues *values);
+    mov rdi, [rel display]      ; arg 1: Display* = display
+    mov rsi, [rel window]       ; arg 2: Drawable = window (Pixmap)
+    xor edx, edx                ; arg 3: valuemask = 0
+    xor ecx, ecx                ; arg 4; XGCValues* = null
+    call XCreateGC
+
+    ; Check if failed
+    test rax, rax
+    je .gcCreationFailed
+    
+    mov [rel gc], rax           ; Save the returned GC
+    
+    ; Load a font
+    ; XFontStruct *XLoadQueryFont(Display *display, const char *name);
+    mov rdi, [rel display]      ; arg 1: Display* = display
+    lea rsi, [rel fontName]     ; arg 2: name = fontName
+    call XLoadQueryFont
+    
+    ; Check if failed
+    test rax, rax
+    je .loadingFontFailed
+    
+    mov rax, [rax + 8]          ; XFontStruct->fid (after the 8 byte ext_data pointer)
+    mov [rel font], rax         ; Save the loaded font
+    
+    ; Set the GC's font
+    ; int XSetFont(Display *display, GC gc, Font font);
+    mov rdi, [rel display]      ; arg 1: Display* = display
+    mov rsi, [rel gc]           ; arg 2: GC = gc
+    mov rdx, [rel font]         ; arg 3: Font = font
+    call XSetFont
+    
+    ; Set the GC's foreground color
+    ; int XSetForeground(Display *display, GC gc, unsigned long foreground);
+    mov rdi, [rel display]      ; arg 1: Display* = display
+    mov rsi, [rel gc]           ; arg 2: GC = gc
+    mov edx, 0xFF0000           ; arg 3: foreground = red
+    call XSetForeground
+    
 .loop:
     ; Get next event
     ; int XNextEvent(Display *display, XEvent *event_return);
@@ -392,6 +484,8 @@ main:
     mov eax, [rel curEvent]     ; Save current event into eax
     cmp eax, KeyPressEventType  ; Check if it's a keypress event
     je .handle_on_keypress
+    cmp eax, ExposeEventType    ; Check if it's an expose event (window needs redrawing)
+    je .handle_on_expose
     cmp eax, ClientMessageEventType ; Check if it's a client message (E.G., close window)
     je .exit                        ; For now just exit for any message
 
@@ -416,6 +510,55 @@ main:
     call printf
     
     jmp .loop
+
+.handle_on_expose:
+    ; Draw the text
+    ; int XDrawString(
+    ;     Display *display,           ; rdi
+    ;     Drawable d,                 ; rsi
+    ;     GC gc,                      ; rdx
+    ;     int x,                      ; rcx
+    ;     int y,                      ; r8
+    ;     const char *string,         ; r9
+    ;     int length                  ; stack
+    ; );
+    sub rsp, 8                  ; pad (keeps 16-byte alignment)
+    push drawTextLength         ; arg 7: length = drawTextLength
+
+    mov rdi, [rel display]      ; arg 1: Display*
+    mov rsi, [rel window]       ; arg 2: Drawable = window
+    mov rdx, [rel gc]           ; arg 3: GC = gc
+    mov ecx, 20                 ; arg 4: x
+    mov r8d, 20                 ; arg 5: y (baseline)
+    lea r9, [rel drawText]      ; arg 6: string = drawText
+    call XDrawString
+    add rsp, 16                 ; 8 (arg) + 8 (pad)
+
+    jmp .loop
+
+.gcCreationFailed:
+    ; Print a message
+    ; sys_write(uint fd, const char *buf, size_t count)
+    ; sys_write(1, message, 13)
+    mov rax, sys_write      ; sys_write syscall number
+    mov rdi, stdout         ; Fle descriptor 1 (stdout)
+    lea rsi, [rel gcCreationFailedMessage]  ; Pointer to message
+    mov rdx, gcCreationFailedMessageLength  ; Number of bytes to write
+    syscall                 ; Invoke kernel
+
+    jmp .exit
+
+.loadingFontFailed:
+    ; Print a message
+    ; sys_write(uint fd, const char *buf, size_t count)
+    ; sys_write(1, message, 13)
+    mov rax, sys_write      ; sys_write syscall number
+    mov rdi, stdout         ; Fle descriptor 1 (stdout)
+    lea rsi, [rel loadingFontFailedMessage]  ; Pointer to message
+    mov rdx, loadingFontFailedMessageLength  ; Number of bytes to write
+    syscall                 ; Invoke kernel
+
+    jmp .exit
 
 .exit:
     
