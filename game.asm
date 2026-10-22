@@ -423,11 +423,13 @@ main:
     ; Map the window 
     ; int XMapWindow(Display *display, Window w);
     mov rdi, [rel display]      ; arg 1: Display*
-    mov rsi, [rel window]   ; arg 2: Window
+    mov rsi, [rel window]       ; arg 2: Window
     call XMapWindow
     
-    mov rdi, [rel display]
-    xor esi, esi                ; discard = False
+    ; TODO: This needs to be deleted later
+    ; XSync(Dsplay *display, bool discard);
+    mov rdi, [rel display]      ; arg 1: Display* = display
+    xor esi, esi                ; arg 2: discard = false
     call XSync
     
     ; mov rdi, [rel display]
