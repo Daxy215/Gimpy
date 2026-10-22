@@ -142,7 +142,7 @@ global main
 
 ; https://www.nasm.us/doc/nasm03.html#section-3.2.1
 section .data
-    windowName: db "Yaser is gay", 0x00
+    windowName: db "A window finally", 0x00
     displayName: db 0
     
     displayFailedMessage: db "Display failed to create", 0x0A
