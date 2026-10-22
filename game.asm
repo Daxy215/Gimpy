@@ -391,10 +391,10 @@ main:
     ;     unsigned long border,       ; stack
     ;     unsigned long background    ; stack
     ; );
+    sub rsp, 8                  ; pad (keeps 16-byte alignment)
     push 0xFFFFFF               ; arg 9: background = white
     push 0                      ; arg 8: border = 0
     push 0                      ; arg 7: border_width = 0
-    sub rsp, 8
 
     mov rdi, [rel display]      ; arg 1: Display*
     mov rsi, [rel rootWindow]   ; arg 2: root window
